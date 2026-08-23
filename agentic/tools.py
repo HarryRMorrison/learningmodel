@@ -1,5 +1,8 @@
 import json
 from pydantic import BaseModel, ConfigDict, Field
+import random
+from errors_handling import RetryableToolError
+
 
 class GetWeatherArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -60,11 +63,13 @@ TOOLS = {
         "function": get_weather,
         "args_model": GetWeatherArgs,
         "description": "Get the current weather for a city.",
+        "max_calls": 3
     },
     "get_surf_forecast": {
         "function": get_surf_forecast,
         "args_model": GetSurfForecastArgs,
         "description": "Get the surf forecast for a city.",
+        "max_calls": 3
     }
 }
 

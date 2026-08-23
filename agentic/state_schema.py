@@ -4,15 +4,28 @@ from typing import Literal, Any
 class ToolExecution(BaseModel):
     name: str
     arguments: dict[str, Any]
-    result: Any
-    success: bool
+
+    status: Literal[
+        "success",
+        "validation_error",
+        "retryable_error",
+        "fatal_error",
+    ]
+
+    data: Any = None
+    error: Any = None
+    attempts: int
 
 class AgentState(BaseModel):
 
-    user_input: str | None = Field(default=None, exclude=True)
+    user_input: str | None
     messages: list[dict] = Field(default_factory=list)
 
-    status: Literal["running", "completed", "error"] = "running"
+    status: Literal[
+        "running", 
+        "completed", 
+        "error", 
+        "failed"] = "running"
 
     step_count: int = 0
     max_steps: int = 10

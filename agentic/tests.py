@@ -6,8 +6,11 @@ def test_run_agent():
     agent_loop(state)
     print("STATUS:", state.status)
     print("STEPS:", state.step_count)
-    print("TOOLS:", state.tool_history)
     print("FINAL:", state.final_answer)
+    print("TOOLS:\n")
+    for tool in state.tool_history:
+        print(tool)
+        print("\n")
 
 if __name__ == "__main__":
     test_run_agent()

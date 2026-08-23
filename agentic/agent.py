@@ -3,52 +3,91 @@ from llm import call_model
 from tools import TOOLS, build_tool_schemas
 from pydantic import ValidationError
 from state_schema import AgentState, ToolExecution
+from errors_handling import RetryableToolError
 
-def execute_tool(name, args, verbose: bool = False):
-    if verbose:
-        print(f"Tool call: {name} with arguments {args}")
-
-    tool = TOOLS.get(name)
-
-    if tool is None:
-        return json.dumps({"error": f"Tool {name} not found"})
-
+def execute_tool(tool, args):
     try:
-        args = tool["args_model"].model_validate(args)
+        validated_args = tool["args_model"].model_validate(args)
+
     except ValidationError as e:
-        return json.dumps({"error": str(e)})
+        return {
+            "status": "validation_error",
+            "data": None,
+            "error": e.errors(),
+        }
 
     try:
-        return tool['function'](**args.model_dump())
+        return {
+            "status": "success",
+            "data": tool["function"](**validated_args.model_dump()),
+            "error": None,
+        }
+
+    except RetryableToolError as e:
+        return {
+            "status": "retryable_error",
+            "data": None,
+            "error": str(e),
+        }
+
     except Exception as e:
-        return json.dumps({"error": f"Tool failed: {str(e)}"})
+        return {
+            "status": "fatal_error",
+            "data": None,
+            "error": str(e),
+        }
 
-
-def handle_tool_calls(state: AgentState, tool_calls: list):
+def handle_tool_calls(
+    state: AgentState,
+    tool_calls: list
+):
     for call in tool_calls:
-        name = call['function']['name']
-        args = call['function']['arguments']
 
-        result = execute_tool(name, args)
+        name = call["function"]["name"]
+        args = call["function"]["arguments"]
 
-        success = not (
-            isinstance(result, dict)
-            and "error" in result
-        )
+        tool = TOOLS.get(name)
+
+        # Unknown tool
+        if tool is None:
+            result = {
+                "status": "fatal_error",
+                "data": None,
+                "error": f"Tool not found: {name}",
+            }
+
+            attempts = 0
+
+        else:
+            attempts = 1
+
+            result = execute_tool(tool, args)
+
+            # Only runtime errors are automatically retried
+            while (result["status"] == "retryable_error" and attempts < tool["max_calls"]):
+                attempts += 1
+
+                result = execute_tool(tool, args)
 
         state.tool_history.append(
             ToolExecution(
                 name=name,
                 arguments=args,
-                result=result,
-                success=success,
+                data=result["data"],
+                error=result["error"],
+                attempts=attempts,
+                status=result["status"],
             )
         )
 
         state.messages.append({
             "role": "tool",
             "tool_name": name,
-            "content": json.dumps(result),
+            "content": json.dumps({
+                "status": result["status"],
+                "data": result["data"],
+                "error": result["error"],
+            }),
         })
 
 def agent_loop(state: AgentState):
@@ -68,9 +107,9 @@ def agent_loop(state: AgentState):
 
         state.messages.append(message)
 
-        tool_calls = message.get("tool_calls", None)
+        tool_calls = message.get("tool_calls", [])
 
-        if tool_calls is None:
+        if not tool_calls:
             state.status = "completed"
             state.final_answer = message["content"]
             break
