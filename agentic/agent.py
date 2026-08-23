@@ -1,21 +1,20 @@
 import json
-from llm import get_llm_response
+from llm import call_model
 from tools import TOOLS, build_tool_schemas
 from pydantic import ValidationError
+from state_schema import AgentState, ToolExecution
 
-def execute_tool(tool_call, verbose: bool = True):
-    tool_name = tool_call['function']['name']
-    tool_raw_args = tool_call['function']['arguments']
+def execute_tool(name, args, verbose: bool = False):
+    if verbose:
+        print(f"Tool call: {name} with arguments {args}")
 
-    print(f"Tool call: {tool_name} with arguments {tool_raw_args}")
-
-    tool = TOOLS.get(tool_name)
+    tool = TOOLS.get(name)
 
     if tool is None:
-        return json.dumps({"error": f"Tool {tool_name} not found"})
+        return json.dumps({"error": f"Tool {name} not found"})
 
     try:
-        args = tool["args_model"].model_validate(tool_raw_args)
+        args = tool["args_model"].model_validate(args)
     except ValidationError as e:
         return json.dumps({"error": str(e)})
 
@@ -25,35 +24,55 @@ def execute_tool(tool_call, verbose: bool = True):
         return json.dumps({"error": f"Tool failed: {str(e)}"})
 
 
-def run_agent(user_input: str, url: str, max_steps: int = 10):
+def handle_tool_calls(state: AgentState, tool_calls: list):
+    for call in tool_calls:
+        name = call['function']['name']
+        args = call['function']['arguments']
 
-    messages = [{"role": "user", "content": user_input}]
+        result = execute_tool(name, args)
+
+        success = not (
+            isinstance(result, dict)
+            and "error" in result
+        )
+
+        state.tool_history.append(
+            ToolExecution(
+                name=name,
+                arguments=args,
+                result=result,
+                success=success,
+            )
+        )
+
+        state.messages.append({
+            "role": "tool",
+            "tool_name": name,
+            "content": json.dumps(result),
+        })
+
+def agent_loop(state: AgentState):
     tool_schemas = build_tool_schemas()
 
-    for step in range(max_steps):
+    while state.status == "running":
 
-        print(f"\n--- Step {step+1} ---")
+        if state.step_count >= state.max_steps:
+            state.status = "error"
+            state.error = f"Agent exceeded maximum of {state.max_steps} steps"
+            break
 
-        response = get_llm_response(messages, tool_values=tool_schemas, url=url).json()
+        state.step_count += 1
 
-        # Save the models message
-        messages.append(response['message'])
+        response = call_model(messages=state.messages, tool_values=tool_schemas).json()
+        message = response['message']
 
-        tool_calls = response['message'].get("tool_calls", None)
+        state.messages.append(message)
+
+        tool_calls = message.get("tool_calls", None)
 
         if tool_calls is None:
-            return response['message']["content"]
+            state.status = "completed"
+            state.final_answer = message["content"]
+            break
 
-        for call in tool_calls:
-            call_results = execute_tool(call)
-
-            # Send observation back to the model
-            messages.append({
-                "role": "tool",
-                "tool_name": call['function']['name'],
-                "content": json.dumps(call_results),
-            })
-
-    raise RuntimeError(
-        f"Agent exceeded maximum of {max_steps} steps"
-    )
+        handle_tool_calls(state, tool_calls)

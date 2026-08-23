@@ -1,6 +1,6 @@
 import requests
 
-def get_llm_response(messages: list, tool_values: list, url: str, llm_model: str = "qwen3:8b"):
+def call_model(messages: list, tool_values: list, url: str = "http://localhost:11434/api/chat", llm_model: str = "qwen3:8b"):
     response = requests.post(
         url,
         json={
