@@ -2,8 +2,10 @@ import json
 from llm import call_model
 from tools import TOOLS, build_tool_schemas
 from pydantic import ValidationError
-from state_schema import AgentState, ToolExecution
+from state_schema import AgentState, ToolExecution, ModelExecution
 from errors_handling import RetryableToolError
+from time import perf_counter
+from datetime import datetime, timezone
 
 def execute_tool(tool, args):
     try:
@@ -61,6 +63,8 @@ def handle_tool_calls(
         else:
             attempts = 1
 
+            start = perf_counter()
+
             result = execute_tool(tool, args)
 
             # Only runtime errors are automatically retried
@@ -68,6 +72,8 @@ def handle_tool_calls(
                 attempts += 1
 
                 result = execute_tool(tool, args)
+
+            duration_ms = (perf_counter() - start) * 1000
 
         state.tool_history.append(
             ToolExecution(
@@ -77,6 +83,8 @@ def handle_tool_calls(
                 error=result["error"],
                 attempts=attempts,
                 status=result["status"],
+                duration_ms=duration_ms,
+                step=state.step_count,
             )
         )
 
@@ -93,25 +101,49 @@ def handle_tool_calls(
 def agent_loop(state: AgentState):
     tool_schemas = build_tool_schemas()
 
-    while state.status == "running":
+    run_start = perf_counter()
 
-        if state.step_count >= state.max_steps:
-            state.status = "error"
-            state.error = f"Agent exceeded maximum of {state.max_steps} steps"
-            break
 
-        state.step_count += 1
+    try:
+        while state.status == "running":
 
-        response = call_model(messages=state.messages, tool_values=tool_schemas).json()
-        message = response['message']
+            if state.step_count >= state.max_steps:
+                state.status = "error"
+                state.error = f"Agent exceeded maximum of {state.max_steps} steps"
+                break
 
-        state.messages.append(message)
+            state.step_count += 1
 
-        tool_calls = message.get("tool_calls", [])
+            start = perf_counter()
+            response = call_model(messages=state.messages, tool_values=tool_schemas).json()
+            duration_ms = (perf_counter() - start) * 1000
+            state.model_history.append(
+                ModelExecution(
+                    step=state.step_count,
+                    model=response.get("model"),
+                    duration_ms=duration_ms,
+                    prompt_tokens=response.get("prompt_eval_count"),
+                    completion_tokens=response.get("eval_count"),
+                    model_duration_ms=(response.get("total_duration", 0)/ 1_000_000),
+                    load_duration_ms=(response.get("load_duration", 0)/ 1_000_000),
+                    done_reason=response.get("done_reason"),
+                )
+            )
 
-        if not tool_calls:
-            state.status = "completed"
-            state.final_answer = message["content"]
-            break
+            message = response['message']
 
-        handle_tool_calls(state, tool_calls)
+            state.messages.append(message)
+
+            tool_calls = message.get("tool_calls", [])
+
+            if not tool_calls:
+                state.status = "completed"
+                state.final_answer = message["content"]
+                break
+
+            handle_tool_calls(state, tool_calls)
+    finally:
+        state.duration_ms = (perf_counter() - run_start) * 1000
+        state.completed_at = datetime.now(timezone.utc)
+        
+    return state
