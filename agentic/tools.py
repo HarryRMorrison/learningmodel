@@ -1,4 +1,21 @@
 import json
+from pydantic import BaseModel, ConfigDict, Field
+
+class GetWeatherArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    city: str = Field(
+        min_length=1,
+        description="Name of the city"
+    )
+
+class GetSurfForecastArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    city: str = Field(
+        min_length=1,
+        description="Name of the city"
+    )
 
 def get_weather(city: str) -> str:
     """
@@ -19,22 +36,49 @@ def get_weather(city: str) -> str:
 
     return json.dumps(result)
 
+def get_surf_forecast(city: str) -> str:
+    """
+    Get the surf forecast for a city.
 
-TOOLS = { get_weather: {   
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "description": "Get the current weather for a city",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "city": {
-                                        "type": "string",
-                                        "description": "The city name"
-                                    }
-                                },
-                                "required": ["city"]
-                            }
-                        }
-                    },
+    Args:
+        city: Name of the city
+    """
+    fake_surf_forecast = {
+        "perth": {"wave_height": 1.5, "condition": "good"},
+        "sydney": {"wave_height": 0.5, "condition": "poor"},
+    }
+
+    result = fake_surf_forecast.get(
+        city.lower(),
+        {"error": "City not found"},
+    )
+
+    return json.dumps(result)
+
+TOOLS = {
+    "get_weather": {
+        "function": get_weather,
+        "args_model": GetWeatherArgs,
+        "description": "Get the current weather for a city.",
+    },
+    "get_surf_forecast": {
+        "function": get_surf_forecast,
+        "args_model": GetSurfForecastArgs,
+        "description": "Get the surf forecast for a city.",
+    }
 }
+
+def build_tool_schemas():
+    schemas = []
+
+    for name, tool in TOOLS.items():
+        schemas.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": tool["description"],
+                "parameters": tool["args_model"].model_json_schema(),
+            },
+        })
+
+    return schemas
